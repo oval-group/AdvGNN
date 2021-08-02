@@ -1,0 +1,7 @@
+[submodule "adv_exp/foolbox"]
+	path = adv_exp/foolbox
+	url = https://github.com/FlorianJaeckle/foolbox.git
+	branch = florian
+[submodule "adv_exp/auto-attack"]
+	path = adv_exp/autoattack
+	url = https://github.com/FlorianJaeckle/auto-attack.git

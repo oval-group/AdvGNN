@@ -1,0 +1,17 @@
+*.egg-info
+*.pyc
+gurobi.log
+.DS_Store
+.idea
+cifardata
+*__pycache__
+runs/
+*.swp
+debug/
+profiler/
+adv_exp/fb_folder/
+build/
+dist/
+mlogger/
+adv_exp/GNNs/old_GNNs/
+cifar_results/
