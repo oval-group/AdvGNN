@@ -36,17 +36,17 @@ We have a dependency on:
 We assume the user's Python environment is based on Anaconda.
 
 ```bash
-git clone --recursive https://github.com/oval-group/plnn-bab.git
+git clone --recursive https://github.com/oval-group/AdvGNN.git
 
-cd plnn-bab
+cd AdvGNN
 
 #Create a conda environment
-conda create -n plnn-bab python=3.6
-conda activate plnn-bab
+yes | conda create -n advgnn python=3.8
+conda activate advgnn
 
 # Install pytorch to this virtualenv
 # (or check updated install instructions at http://pytorch.org)
-conda install pytorch torchvision cudatoolkit=9.2 -c pytorch 
+pip install torch==1.5.1+cu92 torchvision==0.6.1+cu92 -f https://download.pytorch.org/whl/torch_stable.html
 
 # Install the code of this repository
 python setup.py install

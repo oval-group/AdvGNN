@@ -224,7 +224,8 @@ def run_pgd_attack(args):
                 print(f'\n ATTENTION: epsilon increased by {args.change_eps_const}\n')
 
         x, verif_layers, test, y, model = load_cifar_1to1_exp(args.nn_name, int(imag_idx),
-                                                              int(prop_idx), return_true_class=True)
+                                                              int(prop_idx), return_true_class=True,
+                                                              download=(new_idx==0))
         if x is None:
             continue
 
