@@ -2,24 +2,19 @@ import os
 import torch
 import copy
 from torch import nn
-# from plnn.proxlp_solver.solver import SaddleLP
-# from plnn.proxlp_solver import utils
-# import math
-# import time
-# from plnn.GNN_bounding.run_models_bab import run_model_new_batch, load_model_only
-# from plnn.GNN_bounding.graph_outer_minibatch import GraphNet as GraphNetBatch
 from lp_solver.by_pairs import ByPairsDecomposition
-# import os
-# from plnn.proxlp_solver.utils import bdot
-# import copy
 import torch.distributions as dist
 
 from adv_exp.attack_class import Attack_Class
-# from adv_exp.GNN_SAT import GraphNet as GNN_SAT
 from adv_exp.GNN_SAT_optimized import GraphNet as GNN_SAT_optimized
 from adv_exp.utils import load_model_only
 from adv_exp.adam import Adam_Manual, AdamOptimizer
 
+########################################################################
+#   implements the AdvGNN, the GNN-based attack.
+#   The code for the GNN itself is in GNN_SAT_optimized.py
+#   here we call the GNN and use the values it returns
+########################################################################
 
 default_params = {
     'nb_steps': 100,
@@ -35,40 +30,21 @@ default_params = {
     'lin_decay': True,
     'momentum': None,
     'adam': False,
-    'GNN_optimized': False,
+    'GNN_optimized': True,
 }
 
 
 class GNN_attack(Attack_Class):
-    ########################################################################
-    #   implements the GNN attack. The code for the GNN itself is in GNN_SAT.py
-    #   here we call the GNN and use the values it returns
-    #   TODO
-    #   \/ load GNN
-    #   \/ change code that takes direction from GNN and updates images
-    #   - check the point of the 2 layers
-    #   \/ change default_parmas
-    #   - think about how to initialize tensors? could e.g. combine random and init tensor when
-    #     we don't have that many init-tensors yet
-    #   \/ add stepsize
-    #   \/ add stepsize decay/ learning rate schedule
-    #   - assert that lbs and ubs are equivalent to data
-    #   - check equivalence of self.layers and model
-    #   - reducing batch size: add args parameter
-    ########################################################################
 
     def __init__(self, layers=None, params=None, cpu=False, store_loss_progress=False):
         self.__name__ = 'GNN_attack'
 
         if layers:
             self.set_layers(layers)
-        # self.layers = layers
-        # self.net = nn.Sequential(*layers)
+
         self.params = dict(default_params, **params) if params is not None else default_params
         print(f"init step {self.params['initial_step_size']}, final: {self.params['final_step_size']}")
 
-        # for param in self.net.parameters():
-        #     param.requires_grad = False
         self.store_loss_progress = store_loss_progress
         # Store dict of lists of tensors containing the progress in the bounds with the inner iters.
         self.bounds_progress_per_layer = {}
@@ -109,223 +85,192 @@ class GNN_attack(Attack_Class):
     def create_adv_examples(self, data, model, return_criterion="all", init_tensor=None, target=None, gpu=False,
                             lbs_all=None, ubs_all=None, dual_vars=None, return_iters=False, lp_primal=None,
                             return_if_no_progress=False):
-        # with torch.enable_grad():
-            assert return_criterion in ["one", "half", "all", "not_early"]
-            # self.targeted_attack = type(target) != type(None)
-            self.targeted_attack = not isinstance(target, type(None))
+        assert return_criterion in ["one", "half", "all", "not_early"]
+        self.targeted_attack = not isinstance(target, type(None))
 
-            x, y, x_lbs, x_ubs = data
-            if gpu and torch.cuda.is_available():
-                x = x.cuda()
-                x_lbs = x_lbs.cuda()
-                x_ubs = x_ubs.cuda()
-                model.cuda()
-            device = x.device
+        x, y, x_lbs, x_ubs = data
+        if gpu and torch.cuda.is_available():
+            x = x.cuda()
+            x_lbs = x_lbs.cuda()
+            x_ubs = x_ubs.cuda()
+            model.cuda()
+        device = x.device
 
-            iters = self.params['iters']
-            num_adv = self.params['num_adv_ex']
-            initial_step_size = self.params['initial_step_size']
-            final_step_size = self.params['final_step_size']
-            alpha = 1e-5
+        iters = self.params['iters']
+        num_adv = self.params['num_adv_ex']
+        initial_step_size = self.params['initial_step_size']
+        final_step_size = self.params['final_step_size']
+        alpha = 1e-5
 
-            if device.type == 'cpu':
-                labels = torch.LongTensor([y]*num_adv, device=device)
+        if device.type == 'cpu':
+            labels = torch.LongTensor([y]*num_adv, device=device)
+        else:
+            labels = torch.cuda.LongTensor([y]*num_adv, device=device)
+
+        # Calculate the mean of the normal distribution in logit space
+        prior = dist.Uniform(low=x_lbs, high=x_ubs)
+        images = prior.sample(torch.Size([num_adv]))
+
+        if not isinstance(init_tensor, type(None)):
+            if images[0].size() == init_tensor.size():
+                images[0] = init_tensor
+            elif images[0].size() == init_tensor[0].size():
+                images = init_tensor
             else:
-                labels = torch.cuda.LongTensor([y]*num_adv, device=device)
+                print("image size", images.size(), images[0].size())
+                print("init tensor size", init_tensor.size(), init_tensor[0].size())
+                input("images and init tensor not compatible")
 
-            # Calculate the mean of the normal distribution in logit space
-            prior = dist.Uniform(low=x_lbs, high=x_ubs)
-            images = prior.sample(torch.Size([num_adv]))
-
-            if not isinstance(init_tensor, type(None)):
-                if images[0].size() == init_tensor.size():
-                    images[0] = init_tensor
-                    # print("only initialized the initial tensor")
-                elif images[0].size() == init_tensor[0].size():
-                    images = init_tensor
-                    # print("initialized the whole tensor with initial tensor")
-                else:
-                    print("image size", images.size(), images[0].size())
-                    print("init tensor size", init_tensor.size(), init_tensor[0].size())
-                    input("images and init tensor not compatible")
-                # assert(images[0].size() == init_tensor.size()), (images[0].size(), init_tensor.size())
-
-            # Reduce the batch size - pick the 10 best init tensors
-            if self.params['pick_inits']:
-                outputs = model(images)
-                initial_score = -outputs[:, labels[0]] + outputs[:, target]
-                # idces = torch.sort(initial_score).indices < self.params['pick_inits']
-                idces = torch.sort(initial_score, descending=True).indices[:self.params['pick_inits']]
-                images = self._reduce_batch_size(images, idces)
-                lbs_all = self._reduce_batch_size(lbs_all, idces)
-                ubs_all = self._reduce_batch_size(ubs_all, idces)
-                dual_vars = self._reduce_batch_size(dual_vars, idces)
-
-            if not isinstance(target, type(None)):
-                self.loss_type = 'targeted_loss'
-            else:
-                self.loss_type = 'CE_loss'
-                self.CE_loss = nn.CrossEntropyLoss()
-            loss = nn.CrossEntropyLoss()
-
-            self.loss_progress = []
-            if return_if_no_progress:
-                self.loss_progress_vec = []
-                would_have_stopped = []
-                no_progress_last_iter = False
-
+        # Reduce the batch size - pick the 10 best init tensors
+        if self.params['pick_inits']:
             outputs = model(images)
+            initial_score = -outputs[:, labels[0]] + outputs[:, target]
+            idces = torch.sort(initial_score, descending=True).indices[:self.params['pick_inits']]
+            images = self._reduce_batch_size(images, idces)
+            lbs_all = self._reduce_batch_size(lbs_all, idces)
+            ubs_all = self._reduce_batch_size(ubs_all, idces)
+            dual_vars = self._reduce_batch_size(dual_vars, idces)
 
-            if self.params['adam']:
-                # version 1
-                # adam_opt = AdamOptimizer(images)
-                # version 2
-                adam_opt2 = Adam_Manual(images)
+        if not isinstance(target, type(None)):
+            self.loss_type = 'targeted_loss'
+        else:
+            self.loss_type = 'CE_loss'
+            self.CE_loss = nn.CrossEntropyLoss()
+        loss = nn.CrossEntropyLoss()
 
-            for i in range(iters):
-                # if self.params['optimizer'] == 'GNN':
-                if not self.params['feature_grad']:
-                    input("do i really want to use non-gradient version")
-                    # descent direction
-                    # desc_dir = self.GNN(images, x_lbs, x_ubs, lbs_all, ubs_all, # i think x_lbs is included in lbs_all
-                    # maybe i should include primal_vars because they contain interesting information,
-                    #       however they are outdated as we've already updated images
+        self.loss_progress = []
+        if return_if_no_progress:
+            self.loss_progress_vec = []
+            would_have_stopped = []
+            no_progress_last_iter = False
+
+        outputs = model(images)
+
+        if self.params['adam']:
+            adam_opt2 = Adam_Manual(images)
+
+        for i in range(iters):
+            if not self.params['feature_grad']:
+                # AdvGNN version that doesn't use gradients.
+                # This is not inclduded in the paper as it doesn't work well
+                # descent direction
+                desc_dir = self.GNN(images, lbs_all, ubs_all,
+                                    self.layers, dual_vars,
+                                    None, None)
+
+                # compute decaying stepsize
+                step_size = initial_step_size + (i / iters) * (final_step_size - initial_step_size)
+
+                adv_images = images + step_size*desc_dir
+
+                images = torch.max(torch.min(adv_images, x_ubs), x_lbs)
+
+                outputs = model(images)
+                cost = self._loss(outputs, labels, target).to(device)
+
+            elif self.params['feature_grad']:
+                # compute the current gradient
+                # don't need to clone as i'm not changing images while i need images_grad
+                images_grad = images.clone().detach()
+                with torch.enable_grad():
+                    images_grad.requires_grad = True
+                    outputs = model(images_grad)
+
+                    model.zero_grad()
+                    cost = self._loss(outputs, labels, target).to(device)
+                    cost.backward()
+
+                    grad_ = images_grad.grad
+                    images_grad = images_grad.detach()
+
+                # call the GNN to compute a new direction of movement
+                if self.params['lp_primal']:
                     desc_dir = self.GNN(images, lbs_all, ubs_all,
                                         self.layers, dual_vars,
                                         # primal_vars.zahats, primal_vars.zbhats)
-                                        None, None)
+                                        None, None, grad_=grad_.sign(), lp_primal=lp_primal)
+                else:
+                    desc_dir = self.GNN(images, lbs_all, ubs_all,
+                                        self.layers, dual_vars,
+                                        # primal_vars.zahats, primal_vars.zbhats)
+                                        None, None, grad_=grad_.sign())
 
-                    # compute decaying stepsize
+                # compute decaying stepsize
+                if self.params['lin_decay']:
+                    # linearly decaying stepsize
                     step_size = initial_step_size + (i / iters) * (final_step_size - initial_step_size)
+                else:
+                    # exponentially decaying stepsize
+                    step_size = initial_step_size * ((final_step_size/initial_step_size)**(i/iters))
 
-                    # option 1: take sign of desc_dir
-                    # adv_images = images + step_size*desc_dir.sign()
-                    # option 2: take desc_dir and step_size
+                if self.params['momentum']:
+                    # implement momentum
+                    if i == 0:
+                        velocity = desc_dir
+                    else:
+                        mom = self.params['momentum']
+                        velocity = mom * velocity + (1-mom) * desc_dir
+                    desc_dir = velocity
+
+                # take a step using desc_dir (EQUATION (14))
+                if self.params['adam']:
+                    adam_opt2(images, -desc_dir, step_size)
+                    adv_images = images
+                else:
                     adv_images = images + step_size*desc_dir
-                    # option 3:
-                    # adv_images = images + adam*desc_dir
 
-                    images = torch.max(torch.min(adv_images, x_ubs), x_lbs)
+                # project current point onto feasible region (EQUATION (14))
+                images = torch.max(torch.min(adv_images, x_ubs), x_lbs)
 
+                # return early if we haven't made enough progress (only if the flag is set to True)
+                if return_if_no_progress:
+                    # don't need the next 2 lines
+                    outputs = model(images)
+                    cost, cost_vec = self._loss(outputs, labels, target, return_vector=True)
+                    if i < 2:
+                        self.loss_progress_vec.append(cost_vec)
+                    else:
+                        max_idx = cost_vec.argmax()
+                        loss_now = cost_vec[max_idx]
+                        prev_loss = self.loss_progress_vec[-1][max_idx]
+                        prev_prev_loss = self.loss_progress_vec[-2][max_idx]
+                        iters_left = iters - i - 1
+                        eps = 1  # 0.9 0.99
+                        # check whether the improvement made is more than the required rate of improvement needed
+                        not_enough_progress = (loss_now - prev_loss < (-prev_loss/(iters_left + 1))*eps
+                                               and
+                                               loss_now - prev_prev_loss < (-prev_prev_loss/((iters_left + 2)/2))*eps)
+                        if not_enough_progress and no_progress_last_iter:
+                            break
+                            # would_have_stopped.append(i)
+                        self.loss_progress_vec[-2] = self.loss_progress_vec[-1]
+                        self.loss_progress_vec[-1] = cost_vec
+                        no_progress_last_iter = not_enough_progress
+
+                else:
+                    # don't need the next 2 lines
                     outputs = model(images)
                     cost = self._loss(outputs, labels, target).to(device)
 
-                elif self.params['feature_grad']:
-                    # images_grad = copy.deepcopy(images)
-                    # don't need to clone as i'm not changing images while i need images_grad
-                    images_grad = images.clone().detach()
-                    with torch.enable_grad():
-                        images_grad.requires_grad = True
-                        outputs = model(images_grad)
+            # store the all points, mainly needed during training
+            if self.store_loss_progress:
+                self.loss_progress.append(cost)
 
-                        model.zero_grad()
-                        cost = self._loss(outputs, labels, target).to(device)
-                        cost.backward()
+            if i % 1 == 0 and return_criterion != 'not_early':
+                succ, sum_, mean_ = self.success_tensor(outputs, y, target)
+                if return_criterion == "all" and mean_ == 1:
+                    break
+                elif return_criterion == "one" and mean_ > 0:
+                    # we have found an adversarial example so we stop
+                    if return_if_no_progress and len(would_have_stopped):
+                        print(f"\n\nwould would_have_stopped {would_have_stopped} \n\n")
+                    break
+                elif return_criterion == "half" and mean_ >= 0.5:
+                    break
 
-                        grad_ = images_grad.grad
-                        images_grad = images_grad.detach()
-                        # images_grad.detach_()
+        succ, sum_, mean_ = self.success_tensor(outputs, y, target)
 
-                    # descent direction
-                    # desc_dir = self.GNN(images, x_lbs, x_ubs, lbs_all, ubs_all, # i think x_lbs is included in lbs_all
-                    # maybe i should include primal_vars because they contain interesting information,
-                    #       however they are outdated as we've already updated images
-                    if self.params['lp_primal']:
-                        desc_dir = self.GNN(images, lbs_all, ubs_all,
-                                            self.layers, dual_vars,
-                                            # primal_vars.zahats, primal_vars.zbhats)
-                                            None, None, grad_=grad_.sign(), lp_primal=lp_primal)
-                    else:
-                        desc_dir = self.GNN(images, lbs_all, ubs_all,
-                                            self.layers, dual_vars,
-                                            # primal_vars.zahats, primal_vars.zbhats)
-                                            None, None, grad_=grad_.sign())
-
-                    # compute decaying stepsize
-                    if self.params['lin_decay']:
-                        # linearly decaying stepsize
-                        step_size = initial_step_size + (i / iters) * (final_step_size - initial_step_size)
-                    else:
-                        # exponentially decaying stepsize
-                        step_size = initial_step_size * ((final_step_size/initial_step_size)**(i/iters))
-
-                    if self.params['momentum']:
-                        # implement momentum
-                        if i == 0:
-                            velocity = desc_dir
-                        else:
-                            mom = self.params['momentum']
-                            velocity = mom * velocity + (1-mom) * desc_dir
-                        desc_dir = velocity
-
-                    # option 1: take sign of desc_dir
-                    # adv_images = images + step_size*desc_dir.sign()
-                    # option 2: take desc_dir and step_size
-                    # adv_images = images + step_size*desc_dir
-                    # option 3:
-                    # adv_images = images + adam*desc_dir
-
-                    # take a step using desc_dir
-                    if self.params['adam']:
-                        # version 1
-                        # adv_images = images - adam_opt(desc_dir, step_size)
-                        # version 2
-                        adam_opt2(images, -desc_dir, step_size)
-                        adv_images = images
-                    else:
-                        adv_images = images + step_size*desc_dir
-
-                    images = torch.max(torch.min(adv_images, x_ubs), x_lbs)
-
-                    if return_if_no_progress:
-                        # don't need the next 2 lines
-                        outputs = model(images)
-                        cost, cost_vec = self._loss(outputs, labels, target, return_vector=True)
-                        if i < 2:
-                            self.loss_progress_vec.append(cost_vec)
-                        else:
-                            max_idx = cost_vec.argmax()
-                            loss_now = cost_vec[max_idx]
-                            prev_loss = self.loss_progress_vec[-1][max_idx]
-                            prev_prev_loss = self.loss_progress_vec[-2][max_idx]
-                            iters_left = iters - i - 1
-                            eps = 1 # 0.9 0.99
-                            # check whether the improvement made is more than the required rate of improvement needed
-                            not_enough_progress = (loss_now - prev_loss < (-prev_loss/(iters_left + 1))*eps
-                                                   and
-                                                   loss_now - prev_prev_loss < (-prev_prev_loss/((iters_left + 2)/2))*eps)
-                            if not_enough_progress and no_progress_last_iter:
-                                break
-                                # would_have_stopped.append(i)
-                            self.loss_progress_vec[-2] = self.loss_progress_vec[-1]
-                            self.loss_progress_vec[-1] = cost_vec
-                            no_progress_last_iter = not_enough_progress
-
-                    else:
-                        # don't need the next 2 lines
-                        outputs = model(images)
-                        cost = self._loss(outputs, labels, target).to(device)
-
-                if self.store_loss_progress:
-                    self.loss_progress.append(cost)
-
-                if i % 1 == 0 and return_criterion != 'not_early':
-                    succ, sum_, mean_ = self.success_tensor(outputs, y, target)
-                    if return_criterion == "all" and mean_ == 1:
-                        break
-                    elif return_criterion == "one" and mean_ > 0:
-                        if return_if_no_progress and len(would_have_stopped):
-                            print(f"\n\nwould would_have_stopped {would_have_stopped} \n\n")
-                        break
-                    elif return_criterion == "half" and mean_ >= 0.5:
-                        break
-
-            # if i == iters-1 and return_if_no_progress and len(would_have_stopped):
-            #     print(f"failed and would would_have_stopped {would_have_stopped}")
-
-            succ, sum_, mean_ = self.success_tensor(outputs, y, target)
-
-            if return_iters:
-                return images, succ, i
-            else:
-                return images, succ
+        if return_iters:
+            return images, succ, i
+        else:
+            return images, succ
