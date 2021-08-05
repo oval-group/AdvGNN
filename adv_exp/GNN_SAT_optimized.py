@@ -59,7 +59,7 @@ class EmbedLayerUpdate(nn.Module):
         if self.lp_primal:
             feature_fwd_input += 1
 
-        # self.thetas_input implements the function g: R^p -> R^d used for the input layer
+        # self.thetas_input implements the function g: R^q -> R^p used for the input layer
         theta1_input = nn.Linear(feature_fwd_input, p, bias=bias_fwd)
         self.thetas_input = nn.ModuleList()
         self.thetas_input.append(theta1_input)

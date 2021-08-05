@@ -11,7 +11,7 @@ from adv_exp.utils import load_model_only
 from adv_exp.adam import Adam_Manual, AdamOptimizer
 
 ########################################################################
-#   implements the AdvGNN, the GNN-based attack.
+#   implements AdvGNN, the GNN-based attack.
 #   The code for the GNN itself is in GNN_SAT_optimized.py
 #   here we call the GNN and use the values it returns
 ########################################################################

@@ -24,15 +24,13 @@ This repository contains the implementation of the paper [Generating Adversarial
   
 ## Running the code
 ### Dependencies
-The code was implemented assuming to be run under `python3.6`.
+The code was implemented assuming to be run under `python3.8`.
 We have a dependency on:
 * [Pytorch](http://pytorch.org/) to represent the Neural networks and to use as
   a Tensor library. 
 
   
 ### Installation
-(TODO: double check whether this is still working)
- 
 We assume the user's Python environment is based on Anaconda.
 
 ```bash
@@ -54,3 +52,6 @@ python setup.py install
 
 ### Execution
 Finally, all experiments can be replicated by the different python scripts as explained further in the directory [scripts](scripts)
+
+## OVAL Dataset
+The OVAL adversarial dataset can be found in the `./datasets/` directory.
